@@ -11,6 +11,7 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ActivityInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -35,6 +36,41 @@ public class GameActivity extends SDLActivity {
     protected void onCreate(Bundle state) {
         self = this;
         super.onCreate(state);
+    }
+
+    // The launcher and both game engines share one activity. Keep its orientation tied to
+    // the current screen, including when SDL recreates its window with a stale size/hint.
+    private static volatile boolean playingGame;
+
+    private void applyScreenOrientation() {
+        runOnUiThread(() -> setRequestedOrientation(playingGame
+            ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+    }
+
+    public static void showLauncherOrientation() {
+        playingGame = false;
+        if (self != null) self.applyScreenOrientation();
+    }
+
+    public static void showGameOrientation() {
+        playingGame = true;
+        if (self != null) self.applyScreenOrientation();
+    }
+
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        applyScreenOrientation();
+    }
+
+    // CHECK FOR UPDATES on the game list's settings page (Updates).
+    public static void checkUpdates() {
+        if (self != null) Updates.check(self);
+    }
+
+    // At launch: a dialog only when a new version is available.
+    public static void checkUpdatesQuiet() {
+        if (self != null) Updates.check(self, true);
     }
 
     private static SharedPreferences prefs() {
@@ -130,6 +166,7 @@ public class GameActivity extends SDLActivity {
     // The file path of a folder chosen in the picker: its tree id is "<volume>:<path>", e.g.
     // "primary:Download/ROMs" (the phone's own storage) or "1A2B-3C4D:ROMs" (an SD card).
     static String pathOf(Uri tree) {
+        if (!"com.android.externalstorage.documents".equals(tree.getAuthority())) return null;
         String id;
         try {
             id = DocumentsContract.getTreeDocumentId(tree);
@@ -141,7 +178,12 @@ public class GameActivity extends SDLActivity {
         String rel = colon < 0 ? "" : id.substring(colon + 1);
         String base = volume.equalsIgnoreCase("primary") ? Environment.getExternalStorageDirectory().getPath()
                 : "/storage/" + volume;
-        return rel.isEmpty() ? base : base + "/" + rel;
+        try {
+            java.io.File root = new java.io.File(base).getCanonicalFile();
+            java.io.File folder = new java.io.File(root, rel).getCanonicalFile();
+            if (!folder.equals(root) && !folder.getPath().startsWith(root.getPath() + "/")) return null;
+            return folder.isDirectory() && folder.canRead() ? folder.getPath() : null;
+        } catch (java.io.IOException e) { return null; }
     }
 
     // Starts the app again in a new process (Restart, in a process of its own, ends this one

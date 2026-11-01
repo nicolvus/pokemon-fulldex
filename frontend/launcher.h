@@ -5,6 +5,8 @@
 // drawn into a picture on a PC as well; the Switch shows it with switch_platform.cpp before the
 // game's window opens.
 #include <algorithm>
+#include <climits>
+#include <filesystem>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +27,12 @@
 
 namespace Launcher
 {
+
+// Keep the established launcher font while the replacement design is unfinished.
+inline void ModernText(Canvas& c, int x, int y, const std::string& text, int scale, uint32_t colour)
+{
+    c.Text(x, y, text, scale, colour);
+}
 
 // The consoles the list has games of, in the order its sections and tabs come in.
 enum Platform { DS, GBA, N3DS, PLATFORMS };
@@ -141,6 +149,8 @@ inline bool ReadGame(const std::string& rom, const std::string& folder, Game& g)
 {
     FILE* f = fopen(rom.c_str(), "rb");
     if (!f) return false;
+    struct stat info;
+    if (fstat(fileno(f), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0x200) { fclose(f); return false; }
     uint8_t header[0x70];
     bool ok = fread(header, 1, sizeof header, f) == sizeof header;
     g = Game();
@@ -156,7 +166,7 @@ inline bool ReadGame(const std::string& rom, const std::string& folder, Game& g)
     // colours (BGR555, the first transparent) and the title in six languages (UTF-16).
     const uint32_t banner = ok ? header[0x68] | header[0x69] << 8 | header[0x6A] << 16 | (uint32_t)header[0x6B] << 24 : 0;
     uint8_t ban[0x440];
-    if (ok && banner && fseek(f, (long)banner, SEEK_SET) == 0 && fread(ban, 1, sizeof ban, f) == sizeof ban)
+    if (ok && banner >= 0x200 && (uint64_t)banner + sizeof ban <= (uint64_t)info.st_size && fseek(f, (long)banner, SEEK_SET) == 0 && fread(ban, 1, sizeof ban, f) == sizeof ban)
     {
         uint32_t pal[16];
         for (int i = 0; i < 16; i++)
@@ -202,8 +212,17 @@ inline bool ReadGame(const std::string& rom, const std::string& folder, Game& g)
 }
 
 // A JPEG or PNG picture, scaled to Art x Art (each pixel the average of the ones it covers).
+inline bool ImageAllowed(const unsigned char* data, size_t size)
+{
+    int w = 0, h = 0, n = 0;
+    return data && size > 0 && size <= (16u << 20) && size <= INT_MAX &&
+        stbi_info_from_memory(data, (int)size, &w, &h, &n) && w > 0 && h > 0 &&
+        w <= 8192 && h <= 8192 && (uint64_t)w * h <= 16000000;
+}
+
 inline bool LoadArt(const unsigned char* data, size_t size, std::vector<uint32_t>& out)
 {
+    if (!ImageAllowed(data, size)) return false;
     int w = 0, h = 0, n = 0;
     unsigned char* px = stbi_load_from_memory(data, (int)size, &w, &h, &n, 4);
     if (!px) return false;
@@ -391,6 +410,7 @@ struct Theme
     int bandLineH = 1;       // the band's line, in font pixels
     int frameW = 2;          // the chosen game's frame, in font pixels
     uint32_t selBar = 0;     // a bar under the chosen game's name (0: none)
+    bool pokemon = false;
     struct Background* background = nullptr; // a picture behind the list (BACKGROUND: YOUR PICTURE)
 };
 
@@ -509,12 +529,13 @@ inline void LoadLook(const std::string& cfg, const std::string& folder, Theme& t
     for (const char* name : { "/background.jpg", "/background.png", "/background.jpeg" })
     {
         if (!ReadFile(folder + name, data)) continue;
+        if (!ImageAllowed(data.data(), data.size())) continue;
         int w = 0, h = 0, n = 0;
         unsigned char* px = stbi_load_from_memory(data.data(), (int)data.size(), &w, &h, &n, 4);
         if (!px) continue;
         const int step = std::max(1, (std::max(w, h) + 2047) / 2048);
-        b.w = w / step;
-        b.h = h / step;
+        b.w = std::max(1, w / step);
+        b.h = std::max(1, h / step);
         b.px.resize((size_t)b.w * b.h);
         for (int y = 0; y < b.h; y++)
             for (int x = 0; x < b.w; x++)
@@ -534,21 +555,23 @@ inline void LoadLook(const std::string& cfg, const std::string& folder, Theme& t
 struct Grid
 {
     int s, gap, labelH, tabsY, tabsH, headH, top, bottom, tile, cols, gx;
+    int panelX = 0, panelW = 0;
     int rowH() const { return tile + labelH + gap; }
 };
 inline Grid Layout(const Canvas& c)
 {
     Grid g;
-    g.s = std::max(1, c.h / 240); // the font's scale: 3 at 720 lines
+    g.s = std::max(1, std::min(c.w, c.h) / 240); // the font's scale: 3 at 720 lines
     g.gap = 8 * g.s;
     g.labelH = 20 * g.s;
-    g.tabsY = 25 * g.s;
+    g.tabsY = (c.h > c.w ? 46 : 25) * g.s;
     g.tabsH = 13 * g.s;
     g.headH = 13 * g.s;
     g.top = g.tabsY + g.tabsH + 5 * g.s;
     g.bottom = c.h - 16 * g.s;
     // Tiles at most Art x Art at 720 lines, small enough for two rows and a heading on a screen.
     g.tile = std::max(32, std::min(Art * c.h / 720, (g.bottom - g.top - g.headH) / 2 - g.labelH - g.gap));
+    if (c.h > c.w) g.tile = std::max(32, (c.w - 7 * g.gap) / 2);
     g.cols = std::max(1, std::min(4, (c.w - g.gap) / (g.tile + g.gap * 3)));
     const int gridW = g.cols * g.tile + (g.cols - 1) * g.gap * 3;
     g.gx = (c.w - gridW) / 2;
@@ -702,8 +725,8 @@ inline void Draw(Canvas& c, const std::vector<Game>& games, int tab, int selecte
     if (th.background)
         if (const uint32_t* bgPx = th.background->Fitted(c.w, c.h)) std::copy(bgPx, bgPx + (size_t)c.w * c.h, c.px.begin());
     // A band along the top with the title.
-    c.Fill(0, 0, c.w, 22 * s, th.band);
-    c.Fill(0, 22 * s, c.w, th.bandLineH * s, th.bandLine);
+    c.Fill(0, 0, c.w, (c.h > c.w ? 43 : 22) * s, th.band);
+    c.Fill(0, (c.h > c.w ? 43 : 22) * s, c.w, th.bandLineH * s, th.bandLine);
     const std::string title = "POK\x05MON FULLDEX"; // (Pokémon Fulldex: \x05 is the font's É, ui.h)
     c.Text((c.w - Canvas::TextWidth(title, s + 1)) / 2, 6 * s, title, s + 1, th.title);
     // The tabs: the chosen one bright and underlined.
@@ -797,7 +820,8 @@ inline void Draw(Canvas& c, const std::vector<Game>& games, int tab, int selecte
     // of their underlines, and the cut tiles at the top say it already.)
     if (scroll + (bottom - top) < v.height - grid.gap) c.Fill(c.w / 2 - 8 * s, bottom - 2 * s, 16 * s, s, th.hint);
     const std::string hint = !note.empty() ? note : !hintText.empty() ? hintText : "A: PLAY    Y: SETTINGS    L / R: TABS    +: QUIT";
-    c.Text((c.w - Canvas::TextWidth(hint, s)) / 2, c.h - 12 * s, hint, s, th.hint);
+    const int hintScale = std::max(1, std::min(s, (c.w - 8) / std::max(1, (int)hint.size() * 6)));
+    c.Text((c.w - Canvas::TextWidth(hint, hintScale)) / 2, c.h - 12 * s, hint, hintScale, th.hint);
 }
 
 // The settings page (Y on the Switch's list, H or a controller's Y on a PC's): the pause menu's
@@ -817,6 +841,23 @@ inline std::vector<Setting> SettingsList()
 {
     const std::vector<std::pair<std::string, std::string>> onOff = { { "1", "ON" }, { "0", "OFF" } };
     std::vector<Setting> l;
+#ifdef __ANDROID__
+    l.push_back({ "!updates", "CHECK FOR UPDATES", { { "", "CHECK" } }, "",
+                  "CHECKS GITHUB FOR A NEW VERSION. INSTALL DOWNLOADS IT: IT IS CHECKED AGAINST THE RELEASE SHA256SUMS.TXT AND ANDROID ASKS "
+                  "BEFORE INSTALLING. THE OLD VERSION IS KEPT. YOUR ROMS / SAVES AND SETTINGS STAY AS THEY ARE." });
+#elif defined(__APPLE__)
+    l.push_back({ "!updates", "CHECK FOR UPDATES", { { "", "CHECK" } }, "",
+                  "CHECKS GITHUB FOR A NEW VERSION. WHEN THERE IS ONE: CHOOSE AGAIN TO OPEN ITS PAGE AND DOWNLOAD IT THERE." });
+#elif defined(__SWITCH__) && defined(SSR_ALL_GAMES)
+    l.push_back({ "!updates", "CHECK FOR UPDATES", { { "", "CHECK" } }, "",
+                  "CHECKS GITHUB FOR A NEW VERSION. CHOOSE AGAIN TO INSTALL IT: IT IS CHECKED AGAINST THE RELEASE SHA256SUMS.TXT "
+                  "AND THE OLD .NRO IS KEPT IN THE UPDATE FOLDER. YOUR ROMS / SAVES AND SETTINGS STAY AS THEY ARE." });
+#elif !defined(__SWITCH__)
+    l.push_back({ "!updates", "CHECK FOR UPDATES", { { "", "CHECK" } }, "",
+                  "CHECKS GITHUB FOR A NEW VERSION. CHOOSE AGAIN TO INSTALL IT: IT IS CHECKED AGAINST THE RELEASE SHA256SUMS.TXT "
+                  "AND THE OLD VERSION IS KEPT IN THE UPDATE FOLDER. YOUR ROMS / SAVES AND SETTINGS STAY AS THEY ARE." });
+#endif
+
 #ifdef __SWITCH__
     // (The first start's 60 FPS and WORLD DETAIL depend on the game: SoulSilver and HeartGold
     // start lighter. Until either is set, AUTO.)
@@ -875,8 +916,8 @@ inline std::vector<Setting> SettingsList()
     l.push_back({ "start_button", "START BUTTON", { { "menu", "PAUSE MENU" }, { "ds", "DS START" } }, "menu",
                   "PAUSE MENU: START ON A CONTROLLER OPENS THE PAUSE MENU WHILE PLAYING. DS START: IT IS THE DS START BUTTON (THE GAMES HARDLY USE IT). THE START ON THE SCREEN IS ALWAYS THE DS START." });
 #else
-    l.push_back({ "start_button", "START BUTTON", { { "menu", "PAUSE MENU" }, { "ds", "DS START" } }, "menu",
-                  "PAUSE MENU: START ON A CONTROLLER (MENU ON XBOX / OPTIONS ON PS) OPENS THE PAUSE MENU WHILE PLAYING. DS START: IT IS THE DS START BUTTON (THE GAMES HARDLY USE IT). ENTER IS ALWAYS THE DS START." });
+    l.push_back({ "start_button", "START BUTTON", { { "menu", "PAUSE MENU" }, { "ds", "DS START" } }, "ds",
+                  "DS START: START ON A CONTROLLER IS THE DS START; THE XBOX / PS BUTTON, OR START AND BACK TOGETHER, OPEN THE PAUSE MENU. PAUSE MENU: START (MENU ON XBOX / OPTIONS ON PS) OPENS IT. ENTER IS ALWAYS THE DS START." });
 #endif
 #ifndef __SWITCH__
     l.push_back({ "buttons", "BUTTONS", { { "labels", "BY LABEL" }, { "positions", "BY POSITION" } }, "labels",
@@ -920,22 +961,26 @@ inline std::vector<Setting> SettingsList()
     // Only in the pause menu.
 #ifdef __SWITCH__
     l.push_back({ nullptr, "THE PAUSE MENU", {}, "", "PRESS + WHILE PLAYING (+ AND - TOGETHER WITH START BUTTON ON DS START). EVERYTHING ABOVE IS THERE TOO AND CAN BE CHANGED AS YOU PLAY." });
-    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD ZR (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING." });
+    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD ZR (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING. THE BUTTON IS CHANGED IN KEYS AND BUTTONS." });
 #elif defined(SSR_PHONE)
     l.push_back({ nullptr, "THE PAUSE MENU", {}, "", "THE MENU BUTTON AT THE TOP OF THE SCREEN WHILE PLAYING OR START OR GUIDE ON A CONTROLLER. EVERYTHING ABOVE IS THERE TOO." });
-    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD THE >> BUTTON BESIDE R AT THE TOP, OR THE RIGHT TRIGGER OF A CONTROLLER (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING." });
+    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD THE >> BUTTON BESIDE R AT THE TOP, OR THE RIGHT TRIGGER OF A CONTROLLER (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING. THE BUTTON IS CHANGED IN KEYS AND BUTTONS." });
 #else
     l.push_back({ nullptr, "THE PAUSE MENU", {}, "", "ESC ON THE KEYBOARD. ON A CONTROLLER: START (MENU ON XBOX / OPTIONS ON PS) OR ITS GUIDE BUTTON. EVERYTHING ABOVE IS THERE TOO." });
-    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD THE RIGHT TRIGGER OR LEFT SHIFT (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING." });
+    l.push_back({ nullptr, "FAST FORWARD", {}, "", "HOLD THE RIGHT TRIGGER OR LEFT SHIFT (UP TO 4X). FAST FORWARD IN THE PAUSE MENU KEEPS IT ON WITHOUT HOLDING. THE KEY AND BUTTON ARE CHANGED IN KEYS AND BUTTONS." });
 #endif
 #ifdef __SWITCH__
     l.push_back({ "!keys", "KEYS AND BUTTONS", { { "", "CHANGE" } }, "",
-                  "GIVE ANY DS BUTTON / THE PAUSE MENU / FAST FORWARD / SWAP SCREENS ANOTHER BUTTON (ANY CONTROLLER: PRO / JOY-CON OR ONE ADDED WITH SYS-CON OR MISSIONCONTROL). GIVING ONE A BUTTON ANOTHER ONE HAD SWAPS THE TWO. ALSO IN THE PAUSE MENU (CONTROLS). THIS LIST FOLLOWS THE ONES YOU CHANGE." });
+                  "GIVE ANY DS BUTTON / THE PAUSE MENU / FAST FORWARD / SWAP SCREENS / SAVE STATE / LOAD STATE ANOTHER BUTTON (ANY CONTROLLER: PRO / JOY-CON OR ONE ADDED WITH SYS-CON OR MISSIONCONTROL). GIVING ONE A BUTTON ANOTHER ONE HAD SWAPS THE TWO. SAVE STATE AND LOAD STATE START NOT SET. ALSO IN THE PAUSE MENU (CONTROLS). THIS LIST FOLLOWS THE ONES YOU CHANGE." });
 #else
     l.push_back({ "!keys", "KEYS AND BUTTONS", { { "", "CHANGE" } }, "",
-                  "GIVE ANY DS BUTTON / THE PAUSE MENU / FAST FORWARD / SWAP SCREENS ANOTHER KEY OR CONTROLLER BUTTON. GIVING ONE A KEY OR BUTTON ANOTHER ONE HAD SWAPS THE TWO. ALSO IN THE PAUSE MENU (CONTROLS). THIS LIST FOLLOWS THE ONES YOU CHANGE (A PLAYS / B GOES BACK / Y OPENS THESE SETTINGS)." });
+                  "GIVE ANY DS BUTTON / THE PAUSE MENU / FAST FORWARD / SWAP SCREENS / SAVE STATE / LOAD STATE ANOTHER KEY OR CONTROLLER BUTTON. GIVING ONE A KEY OR BUTTON ANOTHER ONE HAD SWAPS THE TWO. SAVE STATE STARTS AS F5 AND LOAD STATE AS F8 (NOT SET ON A CONTROLLER). ALSO IN THE PAUSE MENU (CONTROLS). THIS LIST FOLLOWS THE ONES YOU CHANGE (A PLAYS / B GOES BACK / Y OPENS THESE SETTINGS)." });
 #endif
-    l.push_back({ nullptr, "SAVE STATE / LOAD STATE", {}, "", "IN THE PAUSE MENU: ONE QUICK SLOT PER GAME. YOUR SAVE IN THE GAME IS SEPARATE AND STILL WORKS AS NORMAL." });
+#ifdef __SWITCH__
+    l.push_back({ nullptr, "SAVE STATE / LOAD STATE", {}, "", "ONE QUICK SLOT PER GAME, FROM THE PAUSE MENU. CHOOSE A BUTTON FOR EACH IN KEYS AND BUTTONS (THEY START NOT SET). YOUR SAVE IN THE GAME IS SEPARATE AND STILL WORKS AS NORMAL." });
+#else
+    l.push_back({ nullptr, "SAVE STATE / LOAD STATE", {}, "", "ONE QUICK SLOT PER GAME. F5 SAVES AND F8 LOADS UNTIL YOU CHANGE THEM IN KEYS AND BUTTONS. A CONTROLLER BUTTON IS NOT SET UNTIL YOU CHOOSE ONE. YOUR SAVE IN THE GAME IS SEPARATE AND STILL WORKS AS NORMAL." });
+#endif
     l.push_back({ nullptr, "RESET GAME / QUIT", {}, "", "IN THE PAUSE MENU: START THE GAME AGAIN FROM ITS TITLE SCREEN / BACK TO THIS GAME LIST." });
     return l;
 }
@@ -988,6 +1033,7 @@ inline const std::vector<SettingsGroup>& SettingsGroups()
 // Which group an option is in (SettingsGroups).
 inline int GroupOf(const Setting& s)
 {
+    if (s.key && !strcmp(s.key, "!updates")) return 7;
     if (!s.key) return !strcmp(s.name, "KEYS AND BUTTONS") ? 3 : 7;
     if (!strncmp(s.key, "list_", 5)) return 5;
     if (!strcmp(s.key, "ra") || !strcmp(s.key, "!ra_login")) return 6;
@@ -1150,10 +1196,15 @@ struct SettingsPage
                 found = true;
             }
         if (!found) lines.push_back(line);
-        if (FILE* f = fopen(path.c_str(), "w"))
+        const std::string tmp = path + ".tmp";
+        if (FILE* f = fopen(tmp.c_str(), "w"))
         {
-            for (const std::string& l : lines) fprintf(f, "%s\n", l.c_str());
-            fclose(f);
+            bool ok = true;
+            for (const std::string& l : lines) if (fprintf(f, "%s\n", l.c_str()) < 0) ok = false;
+            ok = fclose(f) == 0 && ok;
+            std::error_code ec;
+            if (ok) std::filesystem::rename(tmp, path, ec);
+            if (!ok || ec) fprintf(stderr, "[launcher] cannot save settings: %s\n", path.c_str());
         }
         return s.key;
     }
@@ -1162,11 +1213,11 @@ struct SettingsPage
     // what it does below it, kept in view as the choice moves.
     void Draw(Canvas& c, const std::string& hint, const Theme& th = Theme())
     {
-        const int s = std::max(1, c.h / 240);
+        const int s = std::max(1, std::min(c.w, c.h) / 240);
         const int ts = std::max(1, (s * 2 + 1) / 3); // the text's scale: 2 at 720 lines, 3 at 1080
         c.Fill(0, 0, c.w, c.h, th.bg);
-        c.Fill(0, 0, c.w, 22 * s, th.band);
-        c.Fill(0, 22 * s, c.w, th.bandLineH * s, th.bandLine);
+        c.Fill(0, 0, c.w, (c.h > c.w ? 43 : 22) * s, th.band);
+        c.Fill(0, (c.h > c.w ? 43 : 22) * s, c.w, th.bandLineH * s, th.bandLine);
         const std::string title = group < 0 ? "SETTINGS" : std::string("SETTINGS: ") + SettingsGroups()[group].name;
         c.Text((c.w - Canvas::TextWidth(title, s + 1)) / 2, 6 * s, title, s + 1, th.title);
         const int width = std::min(c.w - 24 * s, 100 * 6 * ts);
@@ -1189,7 +1240,7 @@ struct SettingsPage
             if (i == selected) selLast = (int)out.size() - 1;
             out.push_back({ "", "", -1, false });
         }
-        const int top = 30 * s, bottom = c.h - 18 * s;
+        const int top = (c.h > c.w ? 48 : 30) * s, bottom = c.h - 18 * s;
         lineH = 10 * ts;
         const int fit = std::max(1, (bottom - top) / lineH);
         if (follow)
@@ -1222,7 +1273,8 @@ struct SettingsPage
         }
         if (scroll > 0) c.Fill(c.w / 2 - 8 * s, top - 4 * s, 16 * s, s, th.hint);
         if (scroll + fit < (int)out.size()) c.Fill(c.w / 2 - 8 * s, bottom + s, 16 * s, s, th.hint);
-        c.Text((c.w - Canvas::TextWidth(hint, s)) / 2, c.h - 12 * s, hint, s, th.hint);
+        const int hintScale = std::max(1, std::min(s, (c.w - 8) / std::max(1, (int)hint.size() * 6)));
+    c.Text((c.w - Canvas::TextWidth(hint, hintScale)) / 2, c.h - 12 * s, hint, hintScale, th.pokemon ? 0xFFDBE9FAu : th.hint);
     }
 };
 

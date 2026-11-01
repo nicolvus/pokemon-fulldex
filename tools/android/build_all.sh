@@ -154,6 +154,9 @@ say "The app around it: manifest, icon, SDL's Java code and the app's own"
 W="$HERE/build-android-dist/skeleton"
 rm -rf "$W"
 mkdir -p "$W/classes" "$W/dex"
+BUILD_EPOCH="$(date +%s)"
+printf '%s\n' "$BUILD_EPOCH" > "$HERE/build-android-dist/fulldex-build-id.txt"
+printf 'package io.github.mamesj.pokemonds; final class BuildInfo { static final long BUILT_AT = %s000L; }\n' "$BUILD_EPOCH" > "$W/BuildInfo.java"
 # The icon: the picture as it is for Android 7 and older, and an adaptive icon for Android 8 on
 # (mipmap-anydpi-v26), whose launchers cut it to their own shape (a circle on a Pixel). Without
 # one, the square picture was shrunk inside a white circle. Its one layer is the picture at 70% of
@@ -201,7 +204,7 @@ XML
 "$BT/aapt2" link -o "$W/base.apk" -I "$JAR" --manifest tools/android/allgames/AndroidManifest.xml \
     --min-sdk-version 24 --target-sdk-version 34 "$W/res.zip"
 javac -nowarn --release 11 -cp "$JAR" -d "$W/classes" \
-    $(find "$DEPS/$SDL_NAME/android-project/app/src/main/java" tools/android/allgames/java -name '*.java') 2>&1 | grep -v '^Note:' || true
+    "$W/BuildInfo.java" $(find "$DEPS/$SDL_NAME/android-project/app/src/main/java" tools/android/allgames/java -name '*.java') 2>&1
 [ -f "$W/classes/io/github/mamesj/pokemonds/GameActivity.class" ] || fail "the app's Java code did not compile"
 "$BT/d8" --release --min-api 24 --lib "$JAR" --output "$W/dex" $(find "$W/classes" -name '*.class')
 (cd "$W/dex" && zip -q -X "$W/base.apk" classes.dex)
@@ -224,6 +227,7 @@ bad = [n for n in zipfile.ZipFile(sys.argv[1]).namelist() if not ok.match(n)]
 if bad: sys.exit('unexpected files in the APK: %s' % bad)
 PY
 if [ -x "$BT/apksigner" ]; then "$BT/apksigner" verify "$APK" && echo "signature: ok"; fi
+python3 tools/updater/write_checksums.py "$HERE/build-android-dist" --build "pokemon-ds-wide-android.apk=$HERE/build-android-dist/fulldex-build-id.txt"
 ls -l "$APK"
 say "Done: $APK"
 cat <<EOF

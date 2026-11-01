@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+// (No RetroAchievements here: frontend/gba_ra.h plays the game alone.)
+#define GBAWIDE_NO_ACHIEVEMENTS 1
+
 namespace GbaWide
 {
 
