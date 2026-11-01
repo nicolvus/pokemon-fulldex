@@ -124,6 +124,7 @@ GBA="${SSR_GBA_DIR:-}"
 [ -n "$GBA" ] && { [ -f "$GBA/frontend/embed.h" ] || fail "SSR_GBA_DIR: not Pokemon GBA Widescreen: $GBA"; GBA="$(realpath "$GBA")"; say "GBA games too: $GBA"; }
 COMMON+=(-DSSR_GBA_DIR="$GBA")
 GBA_WORK="${GBAW_WORK:-$HOME/pokemon-gba-wide}"
+[ -n "$GBA" ] && [ -f "$GBA/deps/mgba/LICENSE" ] && GBA_WORK="$GBA/deps" # (this repository's gbawide)
 [ -z "$GBA" ] || [ -f "$GBA_WORK/mgba/LICENSE" ] || fail "no mGBA in $GBA_WORK (Pokemon GBA Widescreen's setup.sh makes it; GBAW_WORK if elsewhere)"
 mkdir -p build-pc-dist
 

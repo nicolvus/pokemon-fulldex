@@ -585,7 +585,9 @@ addresses come from ssrecomp's own SoulSilver layout. The DS is emulated by [mel
 The Switch's HOME MENU ICONS are made the way [sphaira](https://github.com/ITotalJustice/sphaira)
 makes its forwarders, with its homebrew loader (`tools/switch/forwarder`, GPL-3.0, based on
 nx-hbloader). The GBA games are played by Pokémon GBA Widescreen, built on
-[mGBA](https://mgba.io) (MPL-2.0: `LICENSE-mGBA.txt` in the downloads that have the GBA games).
+[mGBA](https://mgba.io) (MPL-2.0: `LICENSE-mGBA.txt` in the downloads that have the GBA games);
+or, built with `SSR_GBA_DIR=gbawide`, by this repository's own player, mGBA with
+[PokeDaisy](https://github.com/lidor30/pokedaisy)'s EXPAND (GPL-3.0), which knows every language.
 
 GPL-3.0-or-later (see `LICENSE`), as required by melonDS. Not affiliated with
 or endorsed by Nintendo, Game Freak, The Pokémon Company or the melonDS

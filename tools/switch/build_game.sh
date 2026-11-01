@@ -172,7 +172,8 @@ all)
     icon="${SSR_SWITCH_ICON_ALL:-${SSR_SWITCH_ICON:-}}"
     rm -f "$BUILD/icon.jpg"
     [ -n "$icon" ] && install -D -m 644 "$icon" "$BUILD/icon.jpg"
-    # GBA games too (SSR_GBA_DIR: Pokemon GBA Widescreen's folder, after its setup.sh): with
+    # GBA games too (SSR_GBA_DIR: Pokemon GBA Widescreen's folder, or this repository's gbawide, after
+    # its setup.sh): with
     # devkitPro installed or unpacked (DEVKITPRO), not its Docker image, which sees only this folder.
     if [ -n "${SSR_GBA_DIR:-}" ]; then
         [ -f "$SSR_GBA_DIR/frontend/embed.h" ] || fail "SSR_GBA_DIR: not Pokemon GBA Widescreen: $SSR_GBA_DIR"
@@ -190,6 +191,8 @@ all)
     cp LICENSE build-sd/switch/pokemon-ds-wide/LICENSE.txt
     LICENCES="switch/pokemon-ds-wide/LICENSE.txt"
     GBA_WORK="${GBAW_WORK:-$HOME/pokemon-gba-wide}"
+    # (This repository's gbawide keeps its mGBA in gbawide/deps.)
+    [ -n "${SSR_GBA_DIR:-}" ] && [ -f "$SSR_GBA_DIR/deps/mgba/LICENSE" ] && GBA_WORK="$SSR_GBA_DIR/deps"
     if [ -n "${SSR_GBA_DIR:-}" ]; then
         [ -f "$GBA_WORK/mgba/LICENSE" ] || fail "no mGBA in $GBA_WORK (Pokemon GBA Widescreen's setup.sh makes it; GBAW_WORK if elsewhere)"
         cp "$GBA_WORK/mgba/LICENSE" build-sd/switch/pokemon-ds-wide/LICENSE-mGBA.txt

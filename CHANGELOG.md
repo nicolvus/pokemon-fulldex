@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **GBA games in every language:** this repository's own GBA player (`gbawide/`: mGBA with
+  PokeDaisy's EXPAND), built in with `SSR_GBA_DIR=gbawide`. Emerald, FireRed, LeafGreen, Ruby and
+  Sapphire in widescreen in English, Spanish, French, German, Italian and Japanese; saves as
+  before (`emerald.sav`, or named after the ROM's file for the other languages).
 - **Pokémon Diamond and Pearl (experimental):** in the game list, with Platinum's one-screen
   layouts: their functions found from Platinum's (`tools/port_family.py`), in English and
   Diamond in Spanish. Not yet played through.

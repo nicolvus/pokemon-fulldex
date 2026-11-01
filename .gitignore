@@ -25,3 +25,6 @@ __pycache__/
 /gen.new/
 /dist/
 .DS_Store
+
+# The GBA library's fetched mGBA (gbawide/setup.sh)
+/gbawide/deps/
