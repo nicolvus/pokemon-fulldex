@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Spanish versions:** Pokémon White (Edición Blanca), Platinum (Platino), SoulSilver (Plata
+  SoulSilver) and HeartGold (Oro HeartGold) in Spanish play with the one-screen view, as the
+  English ones do. Another language's tables can be made the same way, from that language's
+  ROM and the English one (`tools/port_version.py`).
 - **A new address: github.com/mamesj/pokemon-fulldex** (the old pokemon-ds-widescreen address
   still leads there). The bug report link, the PC download's `README.txt` and the Linux
   AppImage's updates use it.
