@@ -8,6 +8,7 @@
 #include <vector>
 #include <SDL.h>
 #include "merged.h"
+#include "upscale.h"
 
 class GpuCompositor
 {
@@ -19,6 +20,10 @@ public:
         Premultiplied = SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
             SDL_BLENDOPERATION_ADD, SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
     }
+
+#ifdef __SWITCH__
+    int Upscale = Upscaler::OFF; // UPSCALER: the world brought up to the screen by FSR 1 or NIS (upscale.h)
+#endif
 
     void Draw(const Scene& scene, const ScreenImage screens[2], int outW, int outH, bool smooth, const WideImage* wide)
     {
@@ -242,15 +247,25 @@ private:
     void DrawWide(const Scene& scene, const ScreenImage screens[2], int outW, int outH, const MergedView& v, bool smooth,
         const WideImage& wide)
     {
-        SDL_Texture* tex = Make(WideTex, wide.w, wide.h);
-        if (!tex) return;
-        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
-        SDL_SetTextureScaleMode(tex, smooth ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
         const auto t0 = std::chrono::steady_clock::now();
         const uint32_t* px = wide.placed ? wide.pixels
             : MergedFillWideHoles(wide, (int)std::floor(v.originX * wide.w / outW),
                   (int)std::ceil((v.originX + 256 * v.unit) * wide.w / outW), WideFilled);
-        SDL_UpdateTexture(tex, nullptr, px, wide.w * 4);
+        int k = 255;
+        if (wide.fadeMode == 2) k = 255 * (16 - wide.fade) / 16;
+        bool drawn = false;
+#ifdef __SWITCH__
+        // (The world over the whole screen, drawn with fewer lines than the screen has.)
+        if (Upscale != Upscaler::OFF && !wide.placed && wide.h < outH) drawn = Up.Draw(R, px, wide.w, wide.h, k, Upscale);
+#endif
+        SDL_Texture* tex = drawn ? nullptr : Make(WideTex, wide.w, wide.h);
+        if (!drawn && !tex) return;
+        if (tex)
+        {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
+            SDL_SetTextureScaleMode(tex, smooth ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+            SDL_UpdateTexture(tex, nullptr, px, wide.w * 4);
+        }
         WideUploadMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         WideUploads++;
         if (wide.placed)
@@ -261,10 +276,11 @@ private:
             SDL_RenderCopyF(R, tex, nullptr, &dst);
             return;
         }
-        int k = 255;
-        if (wide.fadeMode == 2) k = 255 * (16 - wide.fade) / 16;
-        SDL_SetTextureColorMod(tex, k, k, k);
-        SDL_RenderCopy(R, tex, nullptr, nullptr);
+        if (tex)
+        {
+            SDL_SetTextureColorMod(tex, k, k, k);
+            SDL_RenderCopy(R, tex, nullptr, nullptr);
+        }
         if (wide.fadeMode == 1 && wide.fade)
         {
             SDL_SetRenderDrawBlendMode(R, SDL_BLENDMODE_BLEND);
@@ -450,6 +466,9 @@ private:
     SDL_BlendMode Premultiplied;
     std::vector<Tex> Slots;
     std::vector<bool> CachedPremul; // (each slot's last blend mode, for a texture not uploaded again)
+#ifdef __SWITCH__
+    Upscaler Up;
+#endif
     Tex WideTex, EdgeTex[2], FillTex[2], NarrowTex[2], WeatherTex[2];
     uint32_t Fill[16 * 192];
     std::vector<SDL_Rect> Spans;

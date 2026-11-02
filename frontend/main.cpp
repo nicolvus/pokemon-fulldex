@@ -1487,6 +1487,7 @@ struct Settings
     // view does not run out of land at its sides (frontend/bw2map.h). Read when the game starts.
     bool wideMap = true;
     int wideLines = 720; // height the widescreen 3D is drawn at, at most
+    int upscaler = 0;    // UPSCALER (the Switch): 0 off, 1 AMD FSR 1, 2 NVIDIA NIS (upscale.h)
     // Fewer of those lines while the drawing cannot keep up: off unless turned on (LOWER DETAIL /
     // RES WHEN BUSY). Kept as busy_detail: the auto_detail an older version saved was on by default.
     bool autoDetail = false;
@@ -1574,6 +1575,7 @@ struct Settings
             else if (k == "large_screen") focusMode = v == "top" ? 1 : v == "bottom" ? 2 : 0;
             else if (k == "fullscreen") fullscreen = v == "1";
             else if (k == "smooth") smooth = v == "1";
+            else if (k == "upscaler") upscaler = v == "fsr" ? 1 : v == "nis" ? 2 : 0;
             else if (k == "wide") wide = v == "1";
             else if (k == "wide_map") wideMap = v == "1";
             else if (k == "wide_lines") wideLines = std::clamp(atoi(v.c_str()), 192, 2160);
@@ -1629,6 +1631,7 @@ struct Settings
         f << "wide=" << (wide ? 1 : 0) << "\n";
         f << "wide_map=" << (wideMap ? 1 : 0) << "\n";
         f << "wide_lines=" << wideLines << "\n";
+        f << "upscaler=" << (upscaler == 1 ? "fsr" : upscaler == 2 ? "nis" : "off") << "\n";
         f << "busy_detail=" << (autoDetail ? 1 : 0) << "\n";
         f << "buttons=" << (byLabel ? "labels" : "positions") << "\n";
         f << "fps60=" << (fps60 ? 1 : 0) << "\n";
@@ -4496,7 +4499,7 @@ int main(int argc, char** argv)
         M_VOLUME, M_RA, M_RA_ON, M_RA_ACCOUNT, M_RA_GAME, M_RA_LOGIN, M_RA_TYPED, M_RA_CANCEL, M_BOTHVER,
         M_RA_LIST, M_ACH_POINTS, M_ACH_STATUS, M_ACH_RARITY,
         M_CSEARCH, M_SEARCH_LETTER, M_SEARCH_DELETE, M_SEARCH_SPACE, M_SEARCH_CLEAR, M_SEARCH_DONE,
-        M_CDETAIL_TOGGLE, M_CINFO, M_BACKUPS, M_RESTORE_CONFIRM, M_LOAD_CONFIRM,
+        M_CDETAIL_TOGGLE, M_CINFO, M_BACKUPS, M_RESTORE_CONFIRM, M_LOAD_CONFIRM, M_FSR,
         M_BACKUP0 = 70000,
         M_CHEAT0 = 1000, // (M_CHEAT0 + i: cheat i, CHEATS)
         M_ACH0 = 30000,  // (M_ACH0 + i: achievement i, ACHIEVEMENTS)
@@ -4641,6 +4644,7 @@ int main(int argc, char** argv)
             // ON: fewer lines than WORLD DETAIL for a moment where drawing them cannot keep up
             // (a move's animation full of effects), so that the game does not slow down.
             add(M_AUTODETAIL, "LOWER DETAIL WHEN BUSY", onOff(cfg.autoDetail));
+            add(M_FSR, "UPSCALER", cfg.upscaler == 1 ? "FSR 1" : cfg.upscaler == 2 ? "NIS" : "OFF");
 #else
             // (The same setting, named as on a PC's other games: the lines the 3D world is drawn
             // with, as a screen resolution.)
@@ -5185,6 +5189,9 @@ int main(int argc, char** argv)
             if (!cpuCompose)
             {
                 if (!gpuCompose) gpuCompose = new GpuCompositor(renderer);
+#ifdef __SWITCH__
+                gpuCompose->Upscale = cfg.upscaler;
+#endif
                 gpuCompose->Draw(j.scene, j.screens, j.outW, j.outH, cfg.smooth, &j.wide);
                 perfMark(3);
             }
@@ -6343,6 +6350,11 @@ int main(int argc, char** argv)
                 cfg.smooth = !cfg.smooth;
                 applySmooth();
                 break;
+#ifdef __SWITCH__
+            case M_FSR:
+                cfg.upscaler = (cfg.upscaler + (dir < 0 ? 2 : 1)) % 3;
+                break;
+#endif
             case M_WIDE:
                 cfg.wide = !cfg.wide;
                 break;
@@ -7867,6 +7879,9 @@ int main(int argc, char** argv)
 #if !defined(__SWITCH__) && !defined(SSR_PHONE)
             // (What FAST FORWARD LOW RES is for, while it is the one chosen.)
             if (selId == M_FFLOWRES) hint = "ON: MORE FPS IN FAST FORWARD";
+#endif
+#ifdef __SWITCH__
+            if (selId == M_FSR) hint = "3D WORLD: AMD FSR 1 OR NVIDIA NIS";
 #endif
             if (selId == M_VOLUME) hint = "SOUND AND MUSIC: LEFT / RIGHT";
             // (What START BUTTON does, while it is the one chosen.)
