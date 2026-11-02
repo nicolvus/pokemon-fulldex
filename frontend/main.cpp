@@ -7881,7 +7881,7 @@ int main(int argc, char** argv)
             if (selId == M_FFLOWRES) hint = "ON: MORE FPS IN FAST FORWARD";
 #endif
 #ifdef __SWITCH__
-            if (selId == M_FSR) hint = "3D WORLD: AMD FSR 1 OR NVIDIA NIS";
+            if (selId == M_FSR) hint = "FSR 1 OR NIS: NEEDS OC";
 #endif
             if (selId == M_VOLUME) hint = "SOUND AND MUSIC: LEFT / RIGHT";
             // (What START BUTTON does, while it is the one chosen.)

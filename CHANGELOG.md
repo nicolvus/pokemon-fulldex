@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Switch: UPSCALER in GRAPHICS (and the pause menu): AMD FSR 1 or NVIDIA Image Scaling (NIS)** bring the 3D world up to the screen when WORLD DETAIL is lower (288 / 384 / 540), instead of a plain stretch: SoulSilver, HeartGold, Platinum, Black, White, Black 2 and White 2.
+- **Switch: UPSCALER in GRAPHICS (and the pause menu): AMD FSR 1 or NVIDIA Image Scaling (NIS)** bring the 3D world up to the screen when WORLD DETAIL is lower (288 / 384 / 540), instead of a plain stretch: SoulSilver, HeartGold, Platinum, Black, White, Black 2 and White 2. Needs an overclocked console (OC, such as sys-clk).
 - **LANGUAGE in the settings (DISPLAY): English or Spanish** for the game list, the settings page and the pause menu; Spanish's accented letters drawn in the menus' font.
 - Game list: the names all at one size (one shrunk to fit beside the others looked uneven); Spanish Diamond's battle buttons (BOLSA, HUIR) and its "¿Qué debería hacer...?" no longer cut; Emerald, FireRed and LeafGreen show their box art when the builder's pictures folder has it (SSR_PC_ART: BPEE, BPRE, BPGE).
 - **Switch: saves in a `saves` folder** in the program's folder (DS and GBA games); those left beside the ROMs by an earlier version are moved in when the list opens.
