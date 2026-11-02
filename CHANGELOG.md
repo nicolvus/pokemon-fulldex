@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **LANGUAGE in the settings (DISPLAY): English or Spanish** for the game list, the settings page and the pause menu; Spanish's accented letters drawn in the menus' font.
+- Game list: the names all at one size (one shrunk to fit beside the others looked uneven); Spanish Diamond's battle buttons (BOLSA, HUIR) and its "¿Qué debería hacer...?" no longer cut; Emerald, FireRed and LeafGreen show their box art when the builder's pictures folder has it (SSR_PC_ART: BPEE, BPRE, BPGE).
+- **Switch: saves in a `saves` folder** in the program's folder (DS and GBA games); those left beside the ROMs by an earlier version are moved in when the list opens.
+- **GBA games run at the console's real speed** (59.73 frames a second, by the clock) instead of following the display's 60 Hz or the sound queue.
+- **Diamond and Pearl battles:** Platinum's battle view, the commands and moves told by which panel the game drew (not by colour), so FIGHT, the Bag, RUN, POKéMON and the moves are always on screen.
+
 - **GBA games in every language:** this repository's own GBA player (`gbawide/`: mGBA with
   PokeDaisy's EXPAND), built in with `SSR_GBA_DIR=gbawide`. Emerald, FireRed, LeafGreen, Ruby and
   Sapphire in widescreen in English, Spanish, French, German, Italian and Japanese; saves as
