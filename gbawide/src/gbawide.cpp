@@ -22,6 +22,9 @@
 #include <mgba/core/blip_buf.h>
 #include <mgba/core/core.h>
 #include <mgba/core/log.h>
+#include <mgba/core/serialize.h>
+
+#include "ui.h"
 
 extern "C" {
 #include "../third_party/pokedaisy/pk_wide.h"
@@ -136,8 +139,8 @@ void PostAudio(struct mAVStream*, blip_t* left, blip_t* right)
     blip_read_samples(right, out + 1, n, true);
     if (volume < 1.0f)
         for (int i = 0; i < n * 2; i++) out[i] = (int16_t)(out[i] * volume);
-    // (A queue kept short: the game's sound stays with its picture.)
-    if (audio && SDL_GetQueuedAudioSize(audio) < 8192) SDL_QueueAudio(audio, out, n * 4);
+    // (The game is paced by this queue: Play runs a frame when it is nearly empty.)
+    if (audio && SDL_GetQueuedAudioSize(audio) < 32768) SDL_QueueAudio(audio, out, n * 4);
 }
 
 void QuietLog(struct mLogger*, int, enum mLogLevel, const char*, va_list) {}
@@ -249,7 +252,9 @@ void Play(const std::string& rom, const Options& o)
         }
     const std::string testDir = getenv("GBAW_TEST_DIR") ? getenv("GBAW_TEST_DIR") : ".";
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
+    // (Sound is not needed: without it the game keeps time by the clock.)
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) fprintf(stderr, "[gba] no sound: %s\n", SDL_GetError());
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
     {
         fprintf(stderr, "[gba] SDL: %s\n", SDL_GetError());
         return;
@@ -257,7 +262,6 @@ void Play(const std::string& rom, const Options& o)
     const std::string ini = o.data + "/gba-settings.ini";
     const std::string vol = Setting(ini, "volume");
     volume = vol.empty() ? 1.0f : std::clamp(atoi(vol.c_str()), 0, 100) / 100.0f;
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, Setting(ini, "scaling") == "smooth" ? "1" : "0");
     const int ww = o.w > 0 ? o.w : 1280, wh = o.h > 0 ? o.h : 720;
     SDL_Window* window = SDL_CreateWindow("Pokémon Fulldex", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
                                           SDL_WINDOW_RESIZABLE | (o.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
@@ -329,38 +333,217 @@ void Play(const std::string& rom, const Options& o)
         fprintf(stderr, "[gba] %s (%s, CRC32 %08X), save %s: widescreen %s\n", rom.c_str(), g.key.c_str(), crc,
                 savePath.c_str(), wide ? "on" : "off (not one of the games EXPAND knows)");
         const int stateAt = getenv("GBAW_TEST_STATE_AT") ? atoi(getenv("GBAW_TEST_STATE_AT")) : -1;
-        unsigned held = 0;
+        const std::string statePath = o.saves + "/" + g.key + ".ss1";
+        bool smooth = Setting(ini, "scaling") == "smooth";
+        bool wideOn = Setting(ini, "widescreen") != "0";
+        bool fast = false;
+        int volumeStep = (int)(volume * 10 + 0.5f);
+        auto saveSettings = [&]() {
+            // (Kept beside the DS games' settings; the lines this player does not know stay.)
+            std::vector<std::string> lines;
+            {
+                std::ifstream f(ini);
+                std::string l;
+                while (std::getline(f, l))
+                    if (l.rfind("scaling=", 0) && l.rfind("volume=", 0) && l.rfind("widescreen=", 0) && !l.empty())
+                        lines.push_back(l);
+            }
+            lines.push_back(std::string("scaling=") + (smooth ? "smooth" : "sharp"));
+            lines.push_back("volume=" + std::to_string(volumeStep * 10));
+            lines.push_back(std::string("widescreen=") + (wideOn ? "1" : "0"));
+            std::ofstream f(ini);
+            for (const std::string& l : lines) f << l << "\n";
+        };
+        Menu menu;
+        Canvas canvas;
+        SDL_Texture* overlay = nullptr;
+        int overlayW = 0, overlayH = 0;
+        std::string notice;
+        int noticeFrames = 0;
+        enum { M_RESUME, M_SAVESTATE, M_LOADSTATE, M_FAST, M_WIDE, M_SMOOTH, M_VOLUME, M_RESET, M_QUIT };
+        std::vector<int> ids;
+        auto build = [&]() {
+            menu.items.clear();
+            ids.clear();
+            auto add = [&](int id, const char* label, const std::string& value, int slider = -1) {
+                MenuItem it;
+                it.label = label;
+                it.value = value;
+                it.slider = slider;
+                menu.items.push_back(it);
+                ids.push_back(id);
+            };
+            auto onOff = [](bool on) { return std::string(on ? "ON" : "OFF"); };
+            add(M_RESUME, "RESUME", "");
+            add(M_SAVESTATE, "SAVE STATE", "");
+            add(M_LOADSTATE, "LOAD STATE", "");
+            add(M_FAST, "FAST FORWARD", onOff(fast));
+            if (wide) add(M_WIDE, "WIDESCREEN", onOff(wideOn));
+            add(M_SMOOTH, "SMOOTH SCALING", onOff(smooth));
+            add(M_VOLUME, "VOLUME", std::to_string(volumeStep * 10) + "%", volumeStep);
+            add(M_RESET, "RESET GAME", "");
+            add(M_QUIT, "QUIT", "");
+        };
+        // The GBA's own frame rate, 16777216 / 280896 = 59.7275 a second.
+        const Uint64 framePeriod = SDL_GetPerformanceFrequency() * 280896 / 16777216;
+        Uint64 nextFrame = SDL_GetPerformanceCounter();
+        const bool paced = !maxFrames || getenv("GBAW_TEST_PACED");
+        int ran = 0;
+        Uint64 measuredFrom = 0;
+        unsigned held = 0, prevHeld = 0;
+        bool guide = false, rstick = false, zl = false, zr = false, prevCombo = false;
         bool quit = false;
         int lastScene = -1;
-        for (int frame = 1; !quit && (!maxFrames || frame <= maxFrames); frame++)
+        bool wideReady = false;
+        unsigned wideW = 240, wideH = 160;
+        // (A test run counts the frames it is asked for; a paced one, the frames the game ran.)
+        for (int frame = 1; !quit && (!maxFrames || (paced && getenv("GBAW_TEST_PACED") ? ran < maxFrames : frame <= maxFrames)); frame++)
         {
+            bool escape = false;
             SDL_Event e;
             while (SDL_PollEvent(&e))
             {
                 if (e.type == SDL_QUIT) quit = true;
                 else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat)
                 {
-                    if (e.key.keysym.sym == SDLK_ESCAPE && e.type == SDL_KEYDOWN) quit = true;
+                    if (e.key.keysym.sym == SDLK_ESCAPE && e.type == SDL_KEYDOWN) escape = true;
                     const int k = KeyOfKey(e.key.keysym.sym);
                     if (k >= 0) held = e.type == SDL_KEYDOWN ? held | 1u << k : held & ~(1u << k);
                 }
                 else if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP)
                 {
+                    const bool down = e.type == SDL_CONTROLLERBUTTONDOWN;
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) guide = down;
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) rstick = down;
                     const int k = KeyOfButton(e.cbutton.button);
-                    if (k >= 0) held = e.type == SDL_CONTROLLERBUTTONDOWN ? held | 1u << k : held & ~(1u << k);
+                    if (k >= 0) held = down ? held | 1u << k : held & ~(1u << k);
+                }
+                else if (e.type == SDL_CONTROLLERAXISMOTION)
+                {
+                    if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) zl = e.caxis.value > 16000;
+                    if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) zr = e.caxis.value > 16000;
                 }
                 else if (e.type == SDL_CONTROLLERDEVICEADDED)
                 {
                     if (SDL_GameController* p = SDL_GameControllerOpen(e.cdevice.which)) pads.push_back(p);
                 }
             }
-            // Back / Minus with Start: back to the game list.
-            if ((held & (1u << K_SELECT)) && (held & (1u << K_START))) quit = true;
             unsigned keys = held;
             for (const TestEvent& t : script)
                 if (frame >= t.first && frame <= t.last) keys |= t.keys;
-            core->setKeys(core, keys);
-            core->runFrame(core);
+            // The pause menu: Select and Start together, ZL and ZR together, the right stick pressed,
+            // Guide or Escape - never Start alone, which the game needs (its own menu).
+            const bool combo = ((keys & (1u << K_SELECT)) && (keys & (1u << K_START))) || (zl && zr) || rstick || guide;
+            const unsigned edge = keys & ~prevHeld;
+            prevHeld = keys;
+            if ((combo && !prevCombo) || escape)
+            {
+                menu.open = !menu.open;
+                menu.selected = 0;
+                build();
+            }
+            prevCombo = combo;
+            if (menu.open)
+            {
+                MenuInput in;
+                in.up = edge & (1u << K_UP);
+                in.down = edge & (1u << K_DOWN);
+                in.left = edge & (1u << K_LEFT);
+                in.right = edge & (1u << K_RIGHT);
+                in.accept = edge & (1u << K_A);
+                in.back = edge & (1u << K_B);
+                int dir = 0;
+                const int hit = menu.Update(in, dir);
+                if (in.back) menu.open = false;
+                if (hit >= 0)
+                {
+                    switch (ids[hit])
+                    {
+                    case M_RESUME: menu.open = false; break;
+                    case M_SAVESTATE:
+                        if (struct VFile* sf = VFileOpen(statePath.c_str(), O_CREAT | O_TRUNC | O_WRONLY))
+                        {
+                            mCoreSaveStateNamed(core, sf, SAVESTATE_RTC);
+                            sf->close(sf);
+                            notice = "STATE SAVED";
+                        }
+                        else notice = "STATE NOT SAVED";
+                        menu.open = false;
+                        break;
+                    case M_LOADSTATE:
+                        if (struct VFile* sf = VFileOpen(statePath.c_str(), O_RDONLY))
+                        {
+                            mCoreLoadStateNamed(core, sf, SAVESTATE_RTC);
+                            sf->close(sf);
+                            pk_wide_reset(); // (EXPAND's memory of the frames before is from before the jump)
+                            notice = "STATE LOADED";
+                        }
+                        else notice = "NO STATE SAVED YET";
+                        menu.open = false;
+                        break;
+                    case M_FAST: fast = !fast; break;
+                    case M_WIDE: wideOn = !wideOn; saveSettings(); break;
+                    case M_SMOOTH: smooth = !smooth; saveSettings(); break;
+                    case M_VOLUME:
+                        // (Left and right step it; A goes round, 100% to 0%.)
+                        volumeStep = dir ? std::clamp(volumeStep + dir, 0, 10) : (volumeStep + 1) % 11;
+                        volume = volumeStep / 10.0f;
+                        saveSettings();
+                        break;
+                    case M_RESET: core->reset(core); pk_wide_reset(); menu.open = false; break;
+                    case M_QUIT: quit = true; break;
+                    }
+                    if (menu.open) build();
+                    noticeFrames = notice.empty() ? 0 : 120;
+                }
+                keys = 0; // (the game sees nothing while the menu is up)
+            }
+            else if (combo)
+                keys &= ~((1u << K_SELECT) | (1u << K_START));
+
+            // The game runs at its own pace (59.73 frames a second): a frame when the sound it made
+            // has mostly been played, so the picture never runs ahead of the sound.
+            // (Without sound, by the clock: the GBA's 16.78 MHz over 280896 cycles a frame.)
+            bool due;
+            const Uint64 now = SDL_GetPerformanceCounter();
+            if (fast || (maxFrames && !paced)) due = true;
+            else
+            {
+                // By the clock (the GBA's exact 59.7275 a second, not the display's 60 nor the sound
+                // queue's drift); the sound only holds a frame back when it is far ahead.
+                due = now >= nextFrame && !(audio && SDL_GetQueuedAudioSize(audio) > 6 * 549 * 4);
+                if (due) nextFrame = std::max(nextFrame + framePeriod, now - framePeriod);
+            }
+            if (due && !menu.open && paced && ++ran == 60) measuredFrom = now; // (from the 60th: the start's own delays left out)
+            if (!menu.open && due)
+            {
+                core->setKeys(core, keys);
+                for (int i = 0; i < (fast ? 3 : 1); i++)
+                {
+                    core->runFrame(core);
+                    if (wide && wideOn)
+                    {
+                        int ow = ww, oh = wh;
+                        SDL_GetRendererOutputSize(renderer, &ow, &oh);
+                        for (int y = 0; y < 160; y++) memcpy(wideSource + y * 240, video + y * 256, 240 * 4);
+                        if (i < (fast ? 2 : 0))
+                        {
+                            pk_wide_skip(core, wideSource);
+                            continue;
+                        }
+                        WideWindow(ow, oh, 240, 160, wideW, wideH);
+                        const PkWideView v = { (240 - (int)wideW) / 2, (160 - (int)wideH) / 2, (int)wideW, (int)wideH };
+                        pk_wide_view(core, wideSource, wideFrame, v, nullptr);
+                        wideReady = !pk_wide_fault();
+                        const int scene = pk_wide_scene();
+                        if (maxFrames && scene != lastScene) fprintf(stderr, "[gba] frame %d: scene %d\n", frame, scene);
+                        lastScene = scene;
+                    }
+                    else
+                        wideReady = false;
+                }
+                if (fast && audio) SDL_ClearQueuedAudio(audio);
+            }
             if (frame == stateAt)
                 if (const char* st = getenv("GBAW_TEST_STATE_SAVE"))
                     if (struct VFile* sf = VFileOpen(st, O_CREAT | O_TRUNC | O_WRONLY))
@@ -371,18 +554,20 @@ void Play(const std::string& rom, const Options& o)
 
             int ow = ww, oh = wh;
             SDL_GetRendererOutputSize(renderer, &ow, &oh);
-            bool wideReady = false;
-            unsigned wideW = 240, wideH = 160;
-            if (wide)
+            const bool drawMenu = menu.open || noticeFrames > 0;
+            if (drawMenu)
             {
-                for (int y = 0; y < 160; y++) memcpy(wideSource + y * 240, video + y * 256, 240 * 4);
-                WideWindow(ow, oh, 240, 160, wideW, wideH);
-                const PkWideView v = { (240 - (int)wideW) / 2, (160 - (int)wideH) / 2, (int)wideW, (int)wideH };
-                pk_wide_view(core, wideSource, wideFrame, v, nullptr);
-                wideReady = !pk_wide_fault();
-                const int scene = pk_wide_scene();
-                if (maxFrames && scene != lastScene) fprintf(stderr, "[gba] frame %d: scene %d\n", frame, scene);
-                lastScene = scene;
+                canvas.Resize(ow, oh);
+                canvas.Clear();
+                if (menu.open) menu.Draw(canvas, g.name, "A: CHOOSE   B: BACK");
+                else
+                {
+                    const int sc = std::max(1, oh / 240);
+                    const int tw = Canvas::TextWidth(notice, sc);
+                    canvas.Fill(8 * sc, 8 * sc, tw + 8 * sc, 13 * sc, 0xC0000000);
+                    canvas.Text(12 * sc, 11 * sc, notice, sc, 0xFFFFFFFF);
+                    noticeFrames--;
+                }
             }
             const bool shot = std::find(shots.begin(), shots.end(), frame) != shots.end();
             if (shot)
@@ -391,8 +576,25 @@ void Play(const std::string& rom, const Options& o)
                 snprintf(name, sizeof name, "/gba_%06d.bmp", frame);
                 if (wideReady) SaveBmp(testDir + name, wideFrame, (int)wideW, (int)wideH, (int)wideW);
                 else SaveBmp(testDir + name, video, 240, 160, 256);
+#ifndef __SWITCH__
+                if (drawMenu)
+                {
+                    snprintf(name, sizeof name, "/menu_%06d.bmp", frame);
+                    if (SDL_Surface* m = SDL_CreateRGBSurfaceWithFormatFrom(canvas.px.data(), canvas.w, canvas.h, 32,
+                                                                           canvas.w * 4, SDL_PIXELFORMAT_ARGB8888))
+                    {
+                        SDL_SaveBMP(m, (testDir + name).c_str());
+                        SDL_FreeSurface(m);
+                    }
+                }
+#endif
             }
-            if (maxFrames && !shot) continue; // (a test run draws only what it keeps)
+            if (maxFrames && !shot)
+            {
+                if (paced && !due) SDL_Delay(1);
+                continue; // (a test run draws only what it keeps)
+            }
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, smooth ? "1" : "0");
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderClear(renderer);
             SDL_Rect src = { 0, 0, 240, 160 };
@@ -405,12 +607,40 @@ void Play(const std::string& rom, const Options& o)
             }
             else
                 SDL_UpdateTexture(gameTex, nullptr, video, 256 * 4);
+            SDL_SetTextureScaleMode(tex, smooth ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
             // The picture as large as the screen allows, its shape kept.
             const float scale = std::min((float)ow / src.w, (float)oh / src.h);
             const int dw = (int)(src.w * scale), dh = (int)(src.h * scale);
             const SDL_Rect dst = { (ow - dw) / 2, (oh - dh) / 2, dw, dh };
             SDL_RenderCopy(renderer, tex, &src, &dst);
+            if (drawMenu)
+            {
+                if (!overlay || overlayW != ow || overlayH != oh)
+                {
+                    if (overlay) SDL_DestroyTexture(overlay);
+        if (maxFrames && paced)
+        {
+            const double secs = (double)(SDL_GetPerformanceCounter() - measuredFrom) / SDL_GetPerformanceFrequency();
+            fprintf(stderr, "[gba] %d frames in %.2f s: %.3f a second (the GBA: 59.727)\n", ran - 60, secs, (ran - 60) / secs);
+        }
+                    overlay = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, ow, oh);
+                    if (overlay) SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
+                    overlayW = ow;
+                    overlayH = oh;
+                }
+                if (overlay)
+                {
+                    SDL_UpdateTexture(overlay, nullptr, canvas.px.data(), canvas.w * 4);
+                    SDL_RenderCopy(renderer, overlay, nullptr, nullptr);
+                }
+            }
             SDL_RenderPresent(renderer);
+        }
+        if (overlay) SDL_DestroyTexture(overlay);
+        if (maxFrames && paced)
+        {
+            const double secs = (double)(SDL_GetPerformanceCounter() - measuredFrom) / SDL_GetPerformanceFrequency();
+            fprintf(stderr, "[gba] %d frames in %.2f s: %.3f a second (the GBA: 59.727)\n", ran - 60, secs, (ran - 60) / secs);
         }
         pk_wide_configure(0);
         // (mGBA writes the save as it goes; deinit flushes the rest.)

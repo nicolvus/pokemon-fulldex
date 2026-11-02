@@ -37,8 +37,8 @@ struct Options
     int w = 0, h = 0;       // the window's size (0: 1280 x 720)
 };
 
-// Plays `rom` until the player leaves (Back / Minus with Start, Escape, or closing the window);
-// starts and stops SDL itself.
+// Plays `rom` until the player chooses QUIT in its pause menu (Select and Start together, ZL and ZR
+// together, the right stick pressed, Guide or Escape) or closes the window; starts and stops SDL.
 void Play(const std::string& rom, const Options& options);
 
 }
